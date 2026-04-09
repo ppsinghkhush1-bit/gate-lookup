@@ -1,9 +1,6 @@
-# requirements.txt - HIGH PERFORMANCE
 aiogram==3.13.0
 aiohttp==3.10.10
-aiohttp-socks==0.9.0          # for proxy support (if you add later)
+aiohttp-socks==0.9.0
 python-dotenv==1.0.1
 aiodns==3.2.0
 brotli==1.1.0
-cchardet==2.1.7
-uvloop==0.21.0                # faster event loop on Linux/Mac
