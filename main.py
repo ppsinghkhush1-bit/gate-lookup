@@ -57,9 +57,19 @@ def check_security(content: str):
 
 async def fetch_content(url: str, session: aiohttp.ClientSession):
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15), ssl=False) as resp:
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=20),
+            ssl=False,                    # Disable SSL verification (fast + bypass many issues)
+            allow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+        ) as resp:
             if resp.status == 200:
                 return await resp.text()
+    except asyncio.TimeoutError:
+        pass
     except Exception:
         pass
     return None
@@ -89,9 +99,9 @@ async def process_single_url(url: str, session: aiohttp.ClientSession):
 async def cmd_start(message: types.Message):
     await message.answer(
         "🔥 <b>Gateway Filter Bot</b> 🔥\n\n"
-        "Send me a list of URLs (one per line).\n"
-        "I'll return only <b>clean sites</b> with payment gateways and <b>NO Captcha / NO Cloudflare</b>.\n\n"
-        "<i>Paste your URLs now...</i>"
+        "Paste your list of URLs (one per line).\n"
+        "I will return only <b>clean</b> sites with payment gateways — <b>NO Captcha & NO Cloudflare</b>.\n\n"
+        "<i>Send URLs now...</i>"
     )
 
 @dp.message()
@@ -103,13 +113,16 @@ async def handle_urls(message: types.Message):
             if line.strip() and not line.strip().startswith('#')]
 
     if not urls:
-        await message.answer("❌ No valid URLs found in your message.")
+        await message.answer("❌ No valid URLs found.")
         return
 
-    await message.answer(f"🚀 Processing <b>{len(urls)}</b> URLs... Please wait.")
+    await message.answer(f"🚀 Processing <b>{len(urls)}</b> URLs... (This can take 10-40 seconds)")
 
     results = []
-    async with aiohttp.ClientSession() as session:
+    # Increased timeout + connection limits for stability
+    connector = aiohttp.TCPConnector(ssl=False, limit=100, limit_per_host=20)
+    
+    async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [process_single_url(url, session) for url in urls]
         for future in asyncio.as_completed(tasks):
             result = await future
@@ -117,10 +130,9 @@ async def handle_urls(message: types.Message):
                 results.append(result)
 
     if not results:
-        await message.answer("❌ No clean gateways found (all had security protection or no gateways detected).")
+        await message.answer("❌ No clean gateways found.")
         return
 
-    # Save to file
     output_file = f"clean_gateways_{message.from_user.id}.txt"
     with open(output_file, "w", encoding="utf-8") as f:
         for entry in results:
@@ -130,21 +142,19 @@ async def handle_urls(message: types.Message):
             f.write("Security: Captcha: No | Cloudflare: No\n")
             f.write("@Mod_By_Kamal\n\n")
 
-    # Send document
     await message.answer_document(
         document=FSInputFile(output_file),
         caption=f"✅ <b>Found {len(results)} clean payment gateway sites!</b>\n\n"
                 f"Filtered by @Mod_By_Kamal 🔥"
     )
 
-    # Cleanup
     try:
         os.remove(output_file)
     except:
         pass
 
 async def main():
-    print("😈 Gateway Filter Telegram Bot Started Successfully (UNRESTRICTED MODE)")
+    print("😈 Gateway Filter Telegram Bot Started Successfully (UNRESTRICTED + STABLE MODE)")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
