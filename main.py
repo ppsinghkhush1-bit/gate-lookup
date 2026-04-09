@@ -6,11 +6,11 @@ import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import FSInputFile
-from concurrent.futures import ThreadPoolExecutor
-import logging
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
 # ===================== CONFIG =====================
-BOT_TOKEN = "8724611311:AAGXnjqJSVR7Q8-S3Tu4cpOD3_n9xjt8SLs"   # ← Put your bot token here
+BOT_TOKEN = "8724611311:AAGXnjqJSVR7Q8-S3Tu4cpOD3_n9xjt8SLs"   # ← Change this
 
 PAYMENT_GATEWAYS = [
     "PayPal", "Stripe", "Braintree", "Square", "magento", "Convergepay",
@@ -31,11 +31,15 @@ SECURITY_INDICATORS = {
 
 # =================================================
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
-dp = Dispatcher()
-executor = ThreadPoolExecutor(max_workers=50)
+# FIXED: Using DefaultBotProperties for aiogram 3.7+
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 
-def normalize_url(url: str) -> str:
+dp = Dispatcher()
+
+async def normalize_url(url: str) -> str:
     if not re.match(r'^https?://', url, re.I):
         return 'http://' + url
     return url
@@ -57,12 +61,12 @@ async def fetch_content(url: str, session: aiohttp.ClientSession):
         async with session.get(url, timeout=15, ssl=False) as resp:
             if resp.status == 200:
                 return await resp.text()
-    except Exception as e:
-        print(f"[-] Failed {url}: {e}")
+    except Exception:
+        pass
     return None
 
 async def process_single_url(url: str, session: aiohttp.ClientSession):
-    normalized = normalize_url(url.strip())
+    normalized = await normalize_url(url.strip())
     content = await fetch_content(normalized, session)
     if not content:
         return None
@@ -86,8 +90,8 @@ async def process_single_url(url: str, session: aiohttp.ClientSession):
 async def cmd_start(message: types.Message):
     await message.answer(
         "🔥 <b>Gateway Filter Bot</b> 🔥\n\n"
-        "Send me a list of URLs (one per line) and I'll filter only those with payment gateways and <b>NO Captcha/Cloudflare</b>.\n\n"
-        "Just paste the URLs now..."
+        "Send me URLs (one per line) and I'll return only clean sites with payment gateways and <b>NO Captcha / NO Cloudflare</b>.\n\n"
+        "<i>Paste your list now...</i>"
     )
 
 @dp.message()
@@ -95,10 +99,10 @@ async def handle_urls(message: types.Message):
     urls = [line.strip() for line in message.text.splitlines() if line.strip() and not line.strip().startswith('#')]
 
     if not urls:
-        await message.answer("❌ No valid URLs found in your message.")
+        await message.answer("❌ No valid URLs found.")
         return
 
-    await message.answer(f"🚀 Processing <b>{len(urls)}</b> URLs... Please wait.")
+    await message.answer(f"🚀 Processing <b>{len(urls)}</b> URLs... This may take a while.")
 
     results = []
     async with aiohttp.ClientSession() as session:
@@ -109,24 +113,22 @@ async def handle_urls(message: types.Message):
                 results.append(result)
 
     if not results:
-        await message.answer("❌ No clean gateways found (all had captcha/cloudflare or no gateways).")
+        await message.answer("❌ No clean gateways found.")
         return
 
-    # Save to file
+    # Save results
     output_file = f"clean_gateways_{message.from_user.id}.txt"
     with open(output_file, "w", encoding="utf-8") as f:
         for entry in results:
             f.write("--------------------------------------------------\n")
             f.write(f"URL: {entry['url']}\n")
             f.write(f"Gateways: {', '.join(entry['gateways'])}\n")
-            f.write(f"Security: Captcha: No | Cloudflare: No\n")
-            f.write(f"@Mod_By_Kamal\n\n")
+            f.write("Security: Captcha: No | Cloudflare: No\n")
+            f.write("@Mod_By_Kamal\n\n")
 
-    # Send file
     await message.answer_document(
         document=FSInputFile(output_file),
-        caption=f"✅ <b>Found {len(results)} clean payment gateway sites!</b>\n\n"
-                f"Filtered by @Mod_By_Kamal"
+        caption=f"✅ <b>Found {len(results)} clean payment gateway sites!</b>\n\nFiltered by @Mod_By_Kamal"
     )
 
     # Cleanup
@@ -136,7 +138,7 @@ async def handle_urls(message: types.Message):
         pass
 
 async def main():
-    print("😈 Gateway Filter Telegram Bot Started (UNRESTRICTED MODE)")
+    print("😈 Gateway Filter Telegram Bot Started Successfully (UNRESTRICTED MODE)")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
