@@ -1,7 +1,6 @@
 import asyncio
 import re
 import os
-from urllib.parse import urlparse
 import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -10,7 +9,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 # ===================== CONFIG =====================
-BOT_TOKEN = "8724611311:AAGXnjqJSVR7Q8-S3Tu4cpOD3_n9xjt8SLs"   # ← Change this
+BOT_TOKEN = "8724611311:AAGXnjqJSVR7Q8-S3Tu4cpOD3_n9xjt8SLs"
 
 PAYMENT_GATEWAYS = [
     "PayPal", "Stripe", "Braintree", "Square", "magento", "Convergepay",
@@ -31,7 +30,6 @@ SECURITY_INDICATORS = {
 
 # =================================================
 
-# FIXED: Using DefaultBotProperties for aiogram 3.7+
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -40,6 +38,7 @@ bot = Bot(
 dp = Dispatcher()
 
 async def normalize_url(url: str) -> str:
+    url = url.strip()
     if not re.match(r'^https?://', url, re.I):
         return 'http://' + url
     return url
@@ -58,7 +57,7 @@ def check_security(content: str):
 
 async def fetch_content(url: str, session: aiohttp.ClientSession):
     try:
-        async with session.get(url, timeout=15, ssl=False) as resp:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15), ssl=False) as resp:
             if resp.status == 200:
                 return await resp.text()
     except Exception:
@@ -66,7 +65,7 @@ async def fetch_content(url: str, session: aiohttp.ClientSession):
     return None
 
 async def process_single_url(url: str, session: aiohttp.ClientSession):
-    normalized = await normalize_url(url.strip())
+    normalized = await normalize_url(url)
     content = await fetch_content(normalized, session)
     if not content:
         return None
@@ -90,33 +89,38 @@ async def process_single_url(url: str, session: aiohttp.ClientSession):
 async def cmd_start(message: types.Message):
     await message.answer(
         "🔥 <b>Gateway Filter Bot</b> 🔥\n\n"
-        "Send me URLs (one per line) and I'll return only clean sites with payment gateways and <b>NO Captcha / NO Cloudflare</b>.\n\n"
-        "<i>Paste your list now...</i>"
+        "Send me a list of URLs (one per line).\n"
+        "I'll return only <b>clean sites</b> with payment gateways and <b>NO Captcha / NO Cloudflare</b>.\n\n"
+        "<i>Paste your URLs now...</i>"
     )
 
 @dp.message()
 async def handle_urls(message: types.Message):
-    urls = [line.strip() for line in message.text.splitlines() if line.strip() and not line.strip().startswith('#')]
-
-    if not urls:
-        await message.answer("❌ No valid URLs found.")
+    if not message.text:
         return
 
-    await message.answer(f"🚀 Processing <b>{len(urls)}</b> URLs... This may take a while.")
+    urls = [line.strip() for line in message.text.splitlines() 
+            if line.strip() and not line.strip().startswith('#')]
+
+    if not urls:
+        await message.answer("❌ No valid URLs found in your message.")
+        return
+
+    await message.answer(f"🚀 Processing <b>{len(urls)}</b> URLs... Please wait.")
 
     results = []
     async with aiohttp.ClientSession() as session:
         tasks = [process_single_url(url, session) for url in urls]
-        for task in asyncio.as_completed(tasks):
-            result = await task
+        for future in asyncio.as_completed(tasks):
+            result = await future
             if result:
                 results.append(result)
 
     if not results:
-        await message.answer("❌ No clean gateways found.")
+        await message.answer("❌ No clean gateways found (all had security protection or no gateways detected).")
         return
 
-    # Save results
+    # Save to file
     output_file = f"clean_gateways_{message.from_user.id}.txt"
     with open(output_file, "w", encoding="utf-8") as f:
         for entry in results:
@@ -126,9 +130,11 @@ async def handle_urls(message: types.Message):
             f.write("Security: Captcha: No | Cloudflare: No\n")
             f.write("@Mod_By_Kamal\n\n")
 
+    # Send document
     await message.answer_document(
         document=FSInputFile(output_file),
-        caption=f"✅ <b>Found {len(results)} clean payment gateway sites!</b>\n\nFiltered by @Mod_By_Kamal"
+        caption=f"✅ <b>Found {len(results)} clean payment gateway sites!</b>\n\n"
+                f"Filtered by @Mod_By_Kamal 🔥"
     )
 
     # Cleanup
