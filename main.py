@@ -1,156 +1,143 @@
-import requests
+import asyncio
 import re
 import os
-import sys
-import threading
 from urllib.parse import urlparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import aiohttp
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import FSInputFile
+from concurrent.futures import ThreadPoolExecutor
+import logging
 
-# List of payment gateways to search for
+# ===================== CONFIG =====================
+BOT_TOKEN = "8724611311:AAGXnjqJSVR7Q8-S3Tu4cpOD3_n9xjt8SLs"   # ← Put your bot token here
+
 PAYMENT_GATEWAYS = [
     "PayPal", "Stripe", "Braintree", "Square", "magento", "Convergepay",
     "PaySimple", "oceanpayments", "eProcessing", "hipay", "worldpay", "cybersourse",
     "payjunction", "Authorize.Net", "2Checkout", "Adyen", "Checkout.com", "PayFlow",
     "Payeezy", "usaepay", "creo", "SquareUp", "Authnet", "ebizcharge", "cpay",
-    "Moneris", "recurly", "cardknox", "payeezy", "matt sorra", "ebizcharge",
-    "payflow", "Chargify", "payflow", "Paytrace", "hostedpayments", "securepay",
-    "eWay", "blackbaud", "LawPay", "clover", "cardconnect", "bluepay", "fluidpay",
-    "Worldpay", "Ebiz", "chasepaymentech", "cardknox", "2checkout", "Auruspay",
-    "sagepayments", "paycomet", "geomerchant", "realexpayments",
-    "Rocketgateway", "Rocketgate", "Rocket", "Auth.net", "Authnet", "rocketgate.com",
-    "Shopify", "WooCommerce", "BigCommerce", "Magento Payments",
-    "OpenCart", "PrestaShop", "Razorpay"
+    "Moneris", "recurly", "cardknox", "payeezy", "ebizcharge", "Chargify", "Paytrace",
+    "hostedpayments", "securepay", "eWay", "blackbaud", "LawPay", "clover", "cardconnect",
+    "bluepay", "fluidpay", "Worldpay", "Ebiz", "chasepaymentech", "Auruspay", "sagepayments",
+    "paycomet", "geomerchant", "realexpayments", "Rocketgateway", "Rocketgate", "Shopify",
+    "WooCommerce", "BigCommerce", "Magento Payments", "Razorpay"
 ]
 
-# Security indicators
 SECURITY_INDICATORS = {
     'captcha': ['captcha', 'protected by recaptcha', "i'm not a robot", 'recaptcha/api.js'],
     'cloudflare': ['cloudflare', 'cdnjs.cloudflare.com', 'challenges.cloudflare.com']
 }
 
-def normalize_url(url):
-    """Ensure the URL has a scheme."""
+# =================================================
+
+bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+dp = Dispatcher()
+executor = ThreadPoolExecutor(max_workers=50)
+
+def normalize_url(url: str) -> str:
     if not re.match(r'^https?://', url, re.I):
-        url = 'http://' + url
+        return 'http://' + url
     return url
 
-def find_payment_gateways(content):
-    """Find payment gateways in the given content."""
+def find_payment_gateways(content: str):
     detected = set()
     for gateway in PAYMENT_GATEWAYS:
-        # Use word boundaries to ensure accurate matching
         if re.search(r'\b' + re.escape(gateway) + r'\b', content, re.I):
             detected.add(gateway)
     return list(detected)
 
-def check_security(content):
-    """Check for captcha and cloudflare in the content."""
-    captcha_present = any(re.search(indicator, content, re.I) for indicator in SECURITY_INDICATORS['captcha'])
-    cloudflare_present = any(re.search(indicator, content, re.I) for indicator in SECURITY_INDICATORS['cloudflare'])
-    return captcha_present, cloudflare_present
+def check_security(content: str):
+    captcha = any(re.search(ind, content, re.I) for ind in SECURITY_INDICATORS['captcha'])
+    cloudflare = any(re.search(ind, content, re.I) for ind in SECURITY_INDICATORS['cloudflare'])
+    return captcha, cloudflare
 
-def read_urls_from_file(file_path):
-    """Read URLs from a text file."""
-    if not os.path.isfile(file_path):
-        print(f"Error: File '{file_path}' does not exist.")
-        sys.exit(1)
-    with open(file_path, 'r', encoding='utf-8') as file:
-        urls = [line.strip() for line in file if line.strip()]
-    return urls
-
-def fetch_content(url, session):
-    """Fetch the content of a URL using a requests.Session."""
+async def fetch_content(url: str, session: aiohttp.ClientSession):
     try:
-        response = session.get(url, timeout=10)
-        response.raise_for_status()
-        return response.text
-    except requests.RequestException as e:
-        print(f"Failed to fetch {url}: {e}")
+        async with session.get(url, timeout=15, ssl=False) as resp:
+            if resp.status == 200:
+                return await resp.text()
+    except Exception as e:
+        print(f"[-] Failed {url}: {e}")
+    return None
+
+async def process_single_url(url: str, session: aiohttp.ClientSession):
+    normalized = normalize_url(url.strip())
+    content = await fetch_content(normalized, session)
+    if not content:
         return None
 
-def save_result(entry, output_file, lock):
-    """Save a single entry to the output file in a thread-safe manner."""
-    with lock:
-        with open(output_file, 'a', encoding='utf-8') as file:
-            file.write(f"--------------------------------------------------\n")
-            file.write(f"URL: {entry['url']}\n")
-            file.write(f"Gateways: {', '.join(entry['gateways'])}\n")
-            security = []
-            security.append("Captcha: " + ("No" if not entry['captcha'] else "Yes"))
-            security.append("Cloudflare: " + ("No" if not entry['cloudflare'] else "Yes"))
-            file.write(f"Security: {', '.join(security)}\n\n")
-            file.write(f"@Mod_By_Kamal\n\n")
-            file.write(f"--------------------------------------------------\n")
-            file.flush()  # Ensure data is written to disk immediately
-
-def process_url(url, session, output_file, lock):
-    """Process a single URL: fetch content, detect gateways, check security, and save if criteria met."""
-    normalized = normalize_url(url)
-    content = fetch_content(normalized, session)
-    if content is None:
-        return  # Skip if fetching failed
     gateways = find_payment_gateways(content)
-    captcha, cloudflare = check_security(content)
-    
-    # Skip if no gateways detected or only Unknown gateway
     if not gateways:
-        print(f"Skipped (No Gateways): {normalized}")
-        return
-        
+        return None
+
+    captcha, cloudflare = check_security(content)
+
     if not captcha and not cloudflare:
-        entry = {
+        return {
             'url': normalized,
             'gateways': gateways,
             'captcha': captcha,
             'cloudflare': cloudflare
         }
-        save_result(entry, output_file, lock)
-        print(f"Saved: {normalized}")
-    else:
-        print(f"Skipped (Security Detected): {normalized}")
+    return None
 
-def main():
-    print("=== Gateway Filter Script ===\n")
-    input_file = "urls.txt"  # Replace with your input file name if different
-    if not os.path.isfile(input_file):
-        print(f"Error: File '{input_file}' does not exist.")
-        sys.exit(1)
-    urls = read_urls_from_file(input_file)
-    
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer(
+        "🔥 <b>Gateway Filter Bot</b> 🔥\n\n"
+        "Send me a list of URLs (one per line) and I'll filter only those with payment gateways and <b>NO Captcha/Cloudflare</b>.\n\n"
+        "Just paste the URLs now..."
+    )
+
+@dp.message()
+async def handle_urls(message: types.Message):
+    urls = [line.strip() for line in message.text.splitlines() if line.strip() and not line.strip().startswith('#')]
+
     if not urls:
-        print("No URLs found in the input file.")
-        sys.exit(0)
-    
-    output_file = "filtered_results_no_captcha_cloudflare.txt"
-    
-    # Ensure the output file is empty before starting
-    open(output_file, 'w', encoding='utf-8').close()
-    
-    print(f"Processing {len(urls)} URLs...\n")
-    
-    # Initialize a threading lock for safe file writing
-    lock = threading.Lock()
-    
-    # Initialize a requests.Session for connection pooling
-    session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(pool_connections=100, pool_maxsize=100)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    
-    # Define the number of threads
-    max_threads = min(32, os.cpu_count() + 4)  # Adjust based on your system
-    
-    with ThreadPoolExecutor(max_workers=max_threads) as executor:
-        futures = [
-            executor.submit(process_url, url, session, output_file, lock)
-            for url in urls
-        ]
-        
-        # Optionally, display progress as URLs are processed
-        for future in as_completed(futures):
-            pass  # All progress is already printed in process_url
-    
-    print(f"\nProcessing complete. Results saved to '{output_file}'.")
+        await message.answer("❌ No valid URLs found in your message.")
+        return
+
+    await message.answer(f"🚀 Processing <b>{len(urls)}</b> URLs... Please wait.")
+
+    results = []
+    async with aiohttp.ClientSession() as session:
+        tasks = [process_single_url(url, session) for url in urls]
+        for task in asyncio.as_completed(tasks):
+            result = await task
+            if result:
+                results.append(result)
+
+    if not results:
+        await message.answer("❌ No clean gateways found (all had captcha/cloudflare or no gateways).")
+        return
+
+    # Save to file
+    output_file = f"clean_gateways_{message.from_user.id}.txt"
+    with open(output_file, "w", encoding="utf-8") as f:
+        for entry in results:
+            f.write("--------------------------------------------------\n")
+            f.write(f"URL: {entry['url']}\n")
+            f.write(f"Gateways: {', '.join(entry['gateways'])}\n")
+            f.write(f"Security: Captcha: No | Cloudflare: No\n")
+            f.write(f"@Mod_By_Kamal\n\n")
+
+    # Send file
+    await message.answer_document(
+        document=FSInputFile(output_file),
+        caption=f"✅ <b>Found {len(results)} clean payment gateway sites!</b>\n\n"
+                f"Filtered by @Mod_By_Kamal"
+    )
+
+    # Cleanup
+    try:
+        os.remove(output_file)
+    except:
+        pass
+
+async def main():
+    print("😈 Gateway Filter Telegram Bot Started (UNRESTRICTED MODE)")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
